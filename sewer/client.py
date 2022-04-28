@@ -16,22 +16,23 @@ class Client:
     """
 
     def __init__(
-        self,
-        *,
-        domain_name: str,
-        account: AcmeAccount,
-        cert_key: AcmeKey,
-        is_new_acct=False,
-        dns_class: ProviderBase = None,
-        domain_alt_names: Sequence[str] = None,
-        contact_email: str = None,
-        provider: ProviderBase = None,
-        ACME_REQUEST_TIMEOUT: int = 7,
-        ACME_AUTH_STATUS_WAIT_PERIOD: int = 8,
-        ACME_AUTH_STATUS_MAX_CHECKS: int = 3,
-        ACME_DIRECTORY_URL: str = ACME_DIRECTORY_URL_PRODUCTION,
-        ACME_VERIFY: bool = True,
-        LOG_LEVEL: str = "INFO",
+            self,
+            *,
+            domain_name: str,
+            account: AcmeAccount,
+            cert_key: AcmeKey,
+            is_new_acct=False,
+            dns_class: ProviderBase = None,
+            domain_alt_names: Sequence[str] = None,
+            contact_email: str = None,
+            provider: ProviderBase = None,
+            ACME_REQUEST_TIMEOUT: int = 7,
+            ACME_AUTH_STATUS_WAIT_PERIOD: int = 8,
+            ACME_AUTH_STATUS_MAX_CHECKS: int = 3,
+            ACME_DIRECTORY_URL: str = ACME_DIRECTORY_URL_PRODUCTION,
+            ACME_VERIFY: bool = True,
+            ACME_PREFER_ALTERNATIVE_CHAIN: bool = False,
+            LOG_LEVEL: str = "INFO",
     ):
 
         ### do some type checking of some parameters
@@ -81,6 +82,7 @@ class Client:
         self.ACME_AUTH_STATUS_MAX_CHECKS = ACME_AUTH_STATUS_MAX_CHECKS
         self.ACME_DIRECTORY_URL = ACME_DIRECTORY_URL
         self.ACME_VERIFY = ACME_VERIFY
+        self.ACME_PREFER_ALTERNATIVE_CHAIN = ACME_PREFER_ALTERNATIVE_CHAIN
         self.LOG_LEVEL = LOG_LEVEL.upper()
 
         self.account = account
@@ -136,12 +138,12 @@ class Client:
         return self._request("HEAD", url)
 
     def POST(
-        self, url: str, *, data: bytes = None, headers: Dict[str, str] = None
+            self, url: str, *, data: bytes = None, headers: Dict[str, str] = None
     ) -> requests.Response:
         return self._request("POST", url, data=data, headers=headers)
 
     def _request(
-        self, method: str, url: str, *, data: bytes = None, headers: Dict[str, str] = None
+            self, method: str, url: str, *, data: bytes = None, headers: Dict[str, str] = None
     ) -> requests.Response:
         """
         shared implementation for GET, POST and HEAD
@@ -478,9 +480,23 @@ class Client:
                     status_code=response.status_code, response=log_response(response)
                 )
             )
-        pem_certificate = response.content.decode("utf-8")
-        self.logger.info("download_certificate_success")
-        return pem_certificate
+        # To precisely select which alternate chain you want, you have to decode the certificate and check the issue ID
+        # I didn't have time to implement cert decoding here, so I just select the first alternative link.
+        if self.ACME_PREFER_ALTERNATIVE_CHAIN:
+            if 'Link' in response.headers:
+                links = response.headers['Link'].split(",")
+                for link in links:
+                    if 'rel="alternate"' in link:
+                        alternate_chain_url = link.split(">")[0].split("<")[1]
+                        alternate_response = self.make_signed_acme_request(alternate_chain_url, payload="")
+                        pem_certificate = alternate_response.content.decode("utf-8")
+                        self.logger.info("download_alternative_certificate_success")
+                        return pem_certificate
+                raise RuntimeError("download_certificate: didn't found alternative chain link")
+        else:
+            pem_certificate = response.content.decode("utf-8")
+            self.logger.info("download_certificate_success")
+            return pem_certificate
 
     def get_nonce(self):
         """
